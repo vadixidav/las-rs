@@ -85,6 +85,7 @@ impl<R: Read + Seek> Reader<R> {
     /// ```
     #[allow(clippy::new_ret_no_self)]
     pub fn new(mut read: R) -> Result<Reader<R>> {
+        trace!("reading header");
         let raw_header = raw::Header::read_from(&mut read)?;
         let mut position = u64::from(raw_header.header_size);
         let number_of_variable_length_records = raw_header.number_of_variable_length_records;
@@ -92,10 +93,12 @@ impl<R: Read + Seek> Reader<R> {
         let offset_to_end_of_points = raw_header.offset_to_end_of_points();
         let evlr = raw_header.evlr;
 
+        trace!("creating Builder");
         let mut builder = Builder::new(raw_header)?;
         if builder.point_format.is_compressed {
             return Err(::Error::Laszip);
         }
+        trace!("loading vlrs from file");
         for _ in 0..number_of_variable_length_records {
             let vlr = raw::Vlr::read_from(&mut read, false).and_then(Vlr::new)?;
             position += vlr.len(false) as u64;
@@ -104,11 +107,17 @@ impl<R: Read + Seek> Reader<R> {
         if position > offset_to_point_data {
             return Err(Error::OffsetToPointDataTooSmall(offset_to_point_data as u32).into());
         } else if position < offset_to_point_data {
+            debug!(
+                "reading vlr padding at {} for header",
+                offset_to_point_data - position
+            );
             read.by_ref()
                 .take(offset_to_point_data - position)
                 .read_to_end(&mut builder.vlr_padding)?;
+            trace!("read vlr padding");
         }
 
+        trace!("seeking to end of points to read evlrs");
         read.seek(SeekFrom::Start(offset_to_end_of_points))?;
         if let Some(evlr) = evlr {
             if evlr.start_of_first_evlr < offset_to_end_of_points {
@@ -125,9 +134,13 @@ impl<R: Read + Seek> Reader<R> {
                 .push(raw::Vlr::read_from(&mut read, true).and_then(Vlr::new)?);
         }
 
+        trace!("seeking to the start of point data");
         read.seek(SeekFrom::Start(offset_to_point_data))?;
+
+        trace!("build the header");
         let header = builder.into_header()?;
 
+        trace!("finished");
         Ok(Reader {
             number_of_points: header.number_of_points(),
             header: header,
